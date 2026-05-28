@@ -6,7 +6,7 @@ import re
 import httpx
 from typing import Optional
 
-app = FastAPI(title="Downloader API", description="API لتحميل من جميع المنصات")
+app = FastAPI(title="Downloader API")
 
 # CORS
 app.add_middleware(
@@ -20,35 +20,6 @@ app.add_middleware(
 class DownloadRequest(BaseModel):
     url: str
     type: Optional[str] = "video"
-
-class InfoRequest(BaseModel):
-    url: str
-
-# ============== دوال مساعدة ==============
-
-def extract_youtube_id(url: str) -> Optional[str]:
-    patterns = [
-        r'(?:youtube\.com\/watch\?v=)([^&]+)',
-        r'(?:youtu\.be\/)([^?]+)',
-        r'(?:youtube\.com\/embed\/)([^/?]+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
-
-def extract_instagram_id(url: str) -> Optional[str]:
-    patterns = [
-        r'instagram\.com\/p\/([^/?]+)',
-        r'instagram\.com\/reel\/([^/?]+)',
-        r'instagram\.com\/tv\/([^/?]+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
 
 def detect_platform(url: str) -> str:
     url_lower = url.lower()
@@ -69,169 +40,132 @@ def detect_platform(url: str) -> str:
     else:
         return 'other'
 
-# ============== معالجات المنصات ==============
-
-async def handle_youtube(url: str, media_type: str):
-    if media_type == 'audio':
-        ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
-    else:
-        ydl_opts = {'format': 'best[height<=720]', 'quiet': True}
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return {
-            'success': True,
-            'title': info.get('title'),
-            'thumbnail': info.get('thumbnail'),
-            'download_url': info.get('url'),
-            'author': info.get('uploader'),
-            'duration': info.get('duration')
-        }
-
-async def handle_tiktok(url: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"https://tikwm.com/api/?url={url}")
-        data = response.json()
-        if data.get('code') == 0:
-            return {
-                'success': True,
-                'title': data['data'].get('title', 'TikTok Video'),
-                'thumbnail': data['data'].get('cover'),
-                'download_url': data['data'].get('play'),
-                'author': data['data'].get('author', {}).get('unique_id')
-            }
-    return {'success': False, 'error': 'فشل تحميل تيك توك'}
-
-async def handle_instagram(url: str):
-    # استخدام API مجاني لانستقرام
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"https://instagramdl.hitesh-01.repl.co/instagram?url={url}")
-        data = response.json()
-        if data.get('result'):
-            result = data['result']
-            return {
-                'success': True,
-                'title': 'Instagram Post',
-                'thumbnail': result.get('thumbnail'),
-                'download_url': result.get('video_url') or (result.get('images', [''])[0] if result.get('images') else None),
-                'type': 'video' if result.get('video_url') else 'image'
-            }
-    return {'success': False, 'error': 'فشل تحميل انستقرام'}
-
-async def handle_facebook(url: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"https://getvideo.p.rapidapi.com/?url={url}", 
-            headers={'X-RapidAPI-Key': 'YOUR_KEY'})  # تحتاج مفتاح API
-        # أو استخدام خدمة بديلة
-        return {'success': False, 'error': 'فيسبوك - ستحتاج مفتاح API'}
-
-async def handle_twitter(url: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.post("https://twitsave.com/api/ajaxSearch",
-            data={'q': url},
-            headers={'Content-Type': 'application/x-www-form-urlencoded'})
-        data = response.json()
-        if data.get('medias'):
-            video = next((m for m in data['medias'] if m.get('type') == 'video'), None)
-            if video:
-                return {
-                    'success': True,
-                    'title': 'Twitter Video',
-                    'thumbnail': data.get('thumbnail'),
-                    'download_url': video.get('url')
-                }
-    return {'success': False, 'error': 'فشل تحميل تويتر'}
-
-async def handle_spotify(url: str):
-    track_id = re.search(r'track/([a-zA-Z0-9]+)', url)
-    if track_id:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"https://api.spotifydown.com/download/{track_id.group(1)}")
-            data = response.json()
-            if data.get('link'):
-                return {
-                    'success': True,
-                    'title': data.get('title'),
-                    'thumbnail': data.get('thumbnail'),
-                    'download_url': data.get('link'),
-                    'author': data.get('artist')
-                }
-    return {'success': False, 'error': 'فشل تحميل سبوتيفاي'}
-
-async def handle_pinterest(url: str):
-    pin_id = re.search(r'pin/(\d+)', url)
-    if pin_id:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}")
-            data = response.json()
-            if data.get('video'):
-                return {
-                    'success': True,
-                    'title': 'Pinterest Video',
-                    'thumbnail': data.get('thumbnail'),
-                    'download_url': data.get('video')
-                }
-    return {'success': False, 'error': 'فشل تحميل بينترست'}
-
-# ============== الـ Endpoints ==============
-
-@app.get("/")
-def root():
-    return {"message": "Downloader API", "status": "running"}
-
-@app.get("/health")
-def health():
-    return {"status": "healthy"}
-
-@app.post("/info")
-async def video_info(request: InfoRequest):
-    platform = detect_platform(request.url)
-    try:
-        if platform == 'youtube':
-            ydl_opts = {'quiet': True}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(request.url, download=False)
-                return {'success': True, 'title': info.get('title'), 'thumbnail': info.get('thumbnail')}
-        else:
-            return {'success': True, 'title': 'محتوى', 'thumbnail': None}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
 @app.post("/download")
 async def download_video(request: DownloadRequest):
-    platform = detect_platform(request.url)
+    url = request.url
+    platform = detect_platform(url)
     
     try:
+        # يوتيوب
         if platform == 'youtube':
-            result = await handle_youtube(request.url, request.type)
+            ydl_opts = {'quiet': True}
+            if request.type == 'audio':
+                ydl_opts['format'] = 'bestaudio/best'
+            else:
+                ydl_opts['format'] = 'best[height<=720]'
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return {
+                    'success': True,
+                    'title': info.get('title'),
+                    'thumbnail': info.get('thumbnail'),
+                    'download_url': info.get('url'),
+                    'author': info.get('uploader')
+                }
+        
+        # تيك توك
         elif platform == 'tiktok':
-            result = await handle_tiktok(request.url)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"https://tikwm.com/api/?url={url}")
+                data = resp.json()
+                if data.get('code') == 0:
+                    return {
+                        'success': True,
+                        'title': data['data'].get('title', 'TikTok'),
+                        'thumbnail': data['data'].get('cover'),
+                        'download_url': data['data'].get('play'),
+                        'author': data['data'].get('author', {}).get('unique_id')
+                    }
+        
+        # انستقرام
         elif platform == 'instagram':
-            result = await handle_instagram(request.url)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"https://instagramdl.hitesh-01.repl.co/instagram?url={url}")
+                data = resp.json()
+                if data.get('result'):
+                    result = data['result']
+                    return {
+                        'success': True,
+                        'title': 'Instagram',
+                        'thumbnail': result.get('thumbnail'),
+                        'download_url': result.get('video_url') or (result.get('images', [''])[0] if result.get('images') else None)
+                    }
+        
+        # بينترست
         elif platform == 'pinterest':
-            result = await handle_pinterest(request.url)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}")
+                data = resp.json()
+                if data.get('video'):
+                    return {
+                        'success': True,
+                        'title': 'Pinterest',
+                        'thumbnail': data.get('thumbnail'),
+                        'download_url': data.get('video')
+                    }
+        
+        # تويتر
         elif platform == 'twitter':
-            result = await handle_twitter(request.url)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post("https://twitsave.com/api/ajaxSearch",
+                    data={'q': url},
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'})
+                data = resp.json()
+                if data.get('medias'):
+                    for m in data['medias']:
+                        if m.get('type') == 'video':
+                            return {
+                                'success': True,
+                                'title': 'Twitter',
+                                'thumbnail': data.get('thumbnail'),
+                                'download_url': m.get('url')
+                            }
+        
+        # سبوتيفاي
         elif platform == 'spotify':
-            result = await handle_spotify(request.url)
+            match = re.search(r'track/([a-zA-Z0-9]+)', url)
+            if match:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"https://api.spotifydown.com/download/{match.group(1)}")
+                    data = resp.json()
+                    if data.get('link'):
+                        return {
+                            'success': True,
+                            'title': data.get('title'),
+                            'thumbnail': data.get('thumbnail'),
+                            'download_url': data.get('link'),
+                            'author': data.get('artist')
+                        }
+        
+        # فيسبوك - يحتاج مفتاح API
         elif platform == 'facebook':
-            result = await handle_facebook(request.url)
+            return {
+                'success': False,
+                'error': 'فيسبوك يحتاج مفتاح API من RapidAPI'
+            }
+        
+        # أي منصة أخرى
         else:
-            # محاولة استخدام yt-dlp لأي منصة أخرى
             ydl_opts = {'quiet': True}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(request.url, download=False)
-                result = {
+                info = ydl.extract_info(url, download=False)
+                return {
                     'success': True,
                     'title': info.get('title'),
                     'thumbnail': info.get('thumbnail'),
                     'download_url': info.get('url')
                 }
         
-        return result
+        return {'success': False, 'error': 'فشل تحميل المحتوى'}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {'success': False, 'error': str(e)}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Downloader API"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
