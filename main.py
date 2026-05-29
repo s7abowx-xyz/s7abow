@@ -6,7 +6,7 @@ import re
 import httpx
 from typing import Optional
 
-app = FastAPI(title="Downloader API")
+app = FastAPI(title="Downloader API", description="API لتحميل من جميع المنصات")
 
 # CORS
 app.add_middleware(
@@ -48,11 +48,10 @@ async def download_video(request: DownloadRequest):
     try:
         # يوتيوب
         if platform == 'youtube':
-            ydl_opts = {'quiet': True}
             if request.type == 'audio':
-                ydl_opts['format'] = 'bestaudio/best'
+                ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
             else:
-                ydl_opts['format'] = 'best[height<=720]'
+                ydl_opts = {'format': 'best[height<=720]', 'quiet': True}
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -61,7 +60,8 @@ async def download_video(request: DownloadRequest):
                     'title': info.get('title'),
                     'thumbnail': info.get('thumbnail'),
                     'download_url': info.get('url'),
-                    'author': info.get('uploader')
+                    'author': info.get('uploader'),
+                    'duration': info.get('duration')
                 }
         
         # تيك توك
@@ -72,7 +72,7 @@ async def download_video(request: DownloadRequest):
                 if data.get('code') == 0:
                     return {
                         'success': True,
-                        'title': data['data'].get('title', 'TikTok'),
+                        'title': data['data'].get('title', 'TikTok Video'),
                         'thumbnail': data['data'].get('cover'),
                         'download_url': data['data'].get('play'),
                         'author': data['data'].get('author', {}).get('unique_id')
@@ -85,24 +85,31 @@ async def download_video(request: DownloadRequest):
                 data = resp.json()
                 if data.get('result'):
                     result = data['result']
+                    download_url = result.get('video_url')
+                    if not download_url and result.get('images'):
+                        download_url = result['images'][0] if result['images'] else None
                     return {
                         'success': True,
-                        'title': 'Instagram',
+                        'title': 'Instagram Post',
                         'thumbnail': result.get('thumbnail'),
-                        'download_url': result.get('video_url') or (result.get('images', [''])[0] if result.get('images') else None)
+                        'download_url': download_url
                     }
         
-        # بينترست
-        elif platform == 'pinterest':
+        # فيسبوك
+        elif platform == 'facebook':
             async with httpx.AsyncClient() as client:
-                resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}")
+                resp = await client.get(f"https://getvideo.p.rapidapi.com/?url={url}", 
+                    headers={
+                        'X-RapidAPI-Key': 'YOUR_RAPIDAPI_KEY',  # سجل في RapidAPI وخذ مفتاح مجاني
+                        'X-RapidAPI-Host': 'getvideo.p.rapidapi.com'
+                    })
                 data = resp.json()
-                if data.get('video'):
+                if data.get('sd'):
                     return {
                         'success': True,
-                        'title': 'Pinterest',
-                        'thumbnail': data.get('thumbnail'),
-                        'download_url': data.get('video')
+                        'title': 'Facebook Video',
+                        'thumbnail': data.get('thumb'),
+                        'download_url': data.get('hd') or data.get('sd')
                     }
         
         # تويتر
@@ -113,21 +120,21 @@ async def download_video(request: DownloadRequest):
                     headers={'Content-Type': 'application/x-www-form-urlencoded'})
                 data = resp.json()
                 if data.get('medias'):
-                    for m in data['medias']:
-                        if m.get('type') == 'video':
+                    for media in data['medias']:
+                        if media.get('type') == 'video':
                             return {
                                 'success': True,
-                                'title': 'Twitter',
+                                'title': 'Twitter Video',
                                 'thumbnail': data.get('thumbnail'),
-                                'download_url': m.get('url')
+                                'download_url': media.get('url')
                             }
         
         # سبوتيفاي
         elif platform == 'spotify':
-            match = re.search(r'track/([a-zA-Z0-9]+)', url)
-            if match:
+            track_match = re.search(r'track/([a-zA-Z0-9]+)', url)
+            if track_match:
                 async with httpx.AsyncClient() as client:
-                    resp = await client.get(f"https://api.spotifydown.com/download/{match.group(1)}")
+                    resp = await client.get(f"https://api.spotifydown.com/download/{track_match.group(1)}")
                     data = resp.json()
                     if data.get('link'):
                         return {
@@ -138,14 +145,27 @@ async def download_video(request: DownloadRequest):
                             'author': data.get('artist')
                         }
         
-        # فيسبوك - يحتاج مفتاح API
-        elif platform == 'facebook':
-            return {
-                'success': False,
-                'error': 'فيسبوك يحتاج مفتاح API من RapidAPI'
-            }
+        # بينترست
+        elif platform == 'pinterest':
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}")
+                data = resp.json()
+                if data.get('video'):
+                    return {
+                        'success': True,
+                        'title': 'Pinterest Video',
+                        'thumbnail': data.get('thumbnail'),
+                        'download_url': data.get('video')
+                    }
+                elif data.get('images'):
+                    return {
+                        'success': True,
+                        'title': 'Pinterest Image',
+                        'thumbnail': data.get('thumbnail'),
+                        'download_url': data['images'][0] if data['images'] else None
+                    }
         
-        # أي منصة أخرى
+        # أي منصة أخرى - استخدام yt-dlp
         else:
             ydl_opts = {'quiet': True}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -154,7 +174,8 @@ async def download_video(request: DownloadRequest):
                     'success': True,
                     'title': info.get('title'),
                     'thumbnail': info.get('thumbnail'),
-                    'download_url': info.get('url')
+                    'download_url': info.get('url'),
+                    'author': info.get('uploader')
                 }
         
         return {'success': False, 'error': 'فشل تحميل المحتوى'}
@@ -164,7 +185,7 @@ async def download_video(request: DownloadRequest):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Downloader API"}
+    return {"status": "ok", "message": "Downloader API v2 - يدعم جميع المنصات"}
 
 @app.get("/health")
 def health():
