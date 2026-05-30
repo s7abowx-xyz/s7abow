@@ -20,8 +20,6 @@ app.add_middleware(
 class DownloadRequest(BaseModel):
     url: str
     type: Optional[str] = "video"
-    recaptcha_token: Optional[str] = None
-    user: Optional[str] = None
 
 def detect_platform(url: str) -> str:
     url_lower = url.lower()
@@ -37,36 +35,15 @@ def detect_platform(url: str) -> str:
         return 'twitter'
     elif 'spotify.com' in url_lower:
         return 'spotify'
-    elif 'pinterest.com' in url_lower:
+    elif 'pinterest.com' in url_lower or 'pin.it' in url_lower:
         return 'pinterest'
     else:
         return 'other'
-
-# ========== دالة التحقق من reCAPTCHA ==========
-async def verify_recaptcha(token: str):
-    """التحقق من أن المستخدم إنسان باستخدام Google reCAPTCHA"""
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://www.google.com/recaptcha/api/siteverify",
-                data={"secret": "YOUR_SECRET_KEY", "response": token}
-            )
-            result = resp.json()
-            return result.get("success", False)
-    except Exception as e:
-        print(f"reCAPTCHA verification error: {e}")
-        return False
 
 @app.post("/download")
 async def download_video(request: DownloadRequest):
     url = request.url
     platform = detect_platform(url)
-    
-    # ========== التحقق من reCAPTCHA ==========
-    if request.recaptcha_token:
-        is_human = await verify_recaptcha(request.recaptcha_token)
-        if not is_human:
-            return {'success': False, 'error': 'فشل التحقق - يرجى المحاولة مرة أخرى'}
     
     try:
         # ========== يوتيوب ==========
@@ -221,47 +198,84 @@ async def download_video(request: DownloadRequest):
                 
                 return {"success": False, "error": "Spotify download failed"}
         
-        # ========== بينترست ==========
+        # ========== بينترست - يدعم الروابط المختصرة ==========
         elif platform == 'pinterest':
             async with httpx.AsyncClient() as client:
-                try:
-                    home = await client.get("https://snappin.app/")
-                    
-                    csrf = re.search(r'name="csrf-token" content="([^"]+)"', home.text)
-                    csrf_token = csrf.group(1) if csrf else ""
-                    
-                    cookies = "; ".join([x.split(";")[0] for x in home.headers.get_list("set-cookie")])
-                    
-                    resp = await client.post(
-                        "https://snappin.app/",
-                        json={"url": url},
-                        headers={
-                            "x-csrf-token": csrf_token,
-                            "Cookie": cookies,
-                            "Origin": "https://snappin.app",
-                            "Referer": "https://snappin.app",
-                            "User-Agent": "Mozilla/5.0"
-                        },
-                        timeout=30
-                    )
-                    
-                    html = resp.text
-                    links = re.findall(r'<a[^>]*class="button is-success"[^>]*href="([^"]+)"', html)
-                    
-                    if links:
-                        media = links[0]
-                        if not media.startswith("http"):
-                            media = "https://snappin.app" + media
-                        
-                        return {
-                            "success": True,
-                            "title": "Pinterest Media",
-                            "download_url": media
-                        }
-                except Exception:
-                    pass
+                # معالجة الرابط المختصر pin.it
+                original_url = url
+                final_url = url
                 
-                return {"success": False, "error": "Pinterest download failed"}
+                if 'pin.it' in url:
+                    try:
+                        # اتبع إعادة التوجيه للحصول على الرابط الحقيقي
+                        resp = await client.get(url, follow_redirects=True, timeout=15)
+                        final_url = str(resp.url)
+                    except:
+                        pass
+                
+                # استخراج الـ Pin ID
+                pin_match = re.search(r'pin/(\d+)', final_url)
+                if not pin_match:
+                    pin_match = re.search(r'pinterest\.com/pin/(\d+)', final_url)
+                
+                if pin_match:
+                    pin_id = pin_match.group(1)
+                    
+                    # استخدام API Pinterest الرسمي
+                    try:
+                        resp = await client.get(
+                            f"https://api.pinterest.com/v3/pidgets/pins/{pin_id}/",
+                            timeout=15
+                        )
+                        data = resp.json()
+                        if data.get('data'):
+                            pin_data = data['data']
+                            
+                            if pin_data.get('image'):
+                                img_url = pin_data['image'].get('original', {}).get('url')
+                                if img_url:
+                                    return {
+                                        'success': True,
+                                        'title': pin_data.get('note', 'Pinterest Image'),
+                                        'thumbnail': img_url,
+                                        'download_url': img_url
+                                    }
+                            
+                            if pin_data.get('video'):
+                                video_url = pin_data['video'].get('url')
+                                if video_url:
+                                    return {
+                                        'success': True,
+                                        'title': pin_data.get('note', 'Pinterest Video'),
+                                        'thumbnail': pin_data.get('image', {}).get('original', {}).get('url'),
+                                        'download_url': video_url
+                                    }
+                    except:
+                        pass
+                    
+                    # استخدام pinterestdownloader
+                    try:
+                        resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={original_url}", timeout=15)
+                        data = resp.json()
+                        if data.get('video'):
+                            return {
+                                'success': True,
+                                'title': 'Pinterest Video',
+                                'thumbnail': data.get('thumbnail'),
+                                'download_url': data.get('video')
+                            }
+                        elif data.get('images') and len(data['images']) > 0:
+                            img_url = data['images'][0] if isinstance(data['images'], list) else data['images'].get('orig', {}).get('url')
+                            return {
+                                'success': True,
+                                'title': 'Pinterest Image',
+                                'thumbnail': data.get('thumbnail', img_url),
+                                'download_url': img_url
+                            }
+                    except:
+                        pass
+                
+                return {"success": False, "error": "Pinterest download failed - تأكد من الرابط"}
         
         # ========== منصات أخرى ==========
         else:
