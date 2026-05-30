@@ -172,51 +172,83 @@ async def download_video(request: DownloadRequest):
                 
                 return {'success': False, 'error': 'فشل تحميل تويتر'}
         
-        # ========== سبوتيفاي ==========
+        # ========== سبوتيفاي - API جديد ==========
         elif platform == 'spotify':
-            track_match = re.search(r'track/([a-zA-Z0-9]+)', url)
-            if not track_match:
-                return {'success': False, 'error': 'رابط سبوتيفاي غير صالح'}
-            
             async with httpx.AsyncClient() as client:
                 try:
-                    resp = await client.get(f"https://api.spotifydown.com/download/{track_match.group(1)}", timeout=30)
+                    resp = await client.get(
+                        f"https://api.evogb.org/dl/spotify?url={url}&key=sasuke",
+                        timeout=30
+                    )
                     data = resp.json()
-                    if data.get('link'):
+                    
+                    if data.get('success') or data.get('link') or data.get('download_url'):
                         return {
                             'success': True,
                             'title': data.get('title', 'Spotify Track'),
-                            'thumbnail': data.get('thumbnail'),
-                            'download_url': data.get('link'),
-                            'author': data.get('artist')
+                            'thumbnail': data.get('thumbnail', ''),
+                            'download_url': data.get('link') or data.get('download_url'),
+                            'author': data.get('artist', '')
                         }
                 except:
                     pass
                 
                 try:
-                    ydl_opts = {'quiet': True, 'format': 'bestaudio/best'}
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        search_query = f"ytsearch1:{url}"
-                        info = ydl.extract_info(search_query, download=False)
-                        if info and info.get('entries') and len(info['entries']) > 0:
-                            video_url = f"https://youtube.com/watch?v={info['entries'][0]['id']}"
-                            with yt_dlp.YoutubeDL({'quiet': True, 'format': 'bestaudio/best'}) as ydl2:
-                                audio_info = ydl2.extract_info(video_url, download=False)
-                                return {
-                                    'success': True,
-                                    'title': audio_info.get('title', 'Spotify Track'),
-                                    'thumbnail': audio_info.get('thumbnail'),
-                                    'download_url': audio_info.get('url'),
-                                    'author': audio_info.get('uploader')
-                                }
+                    track_match = re.search(r'track/([a-zA-Z0-9]+)', url)
+                    if track_match:
+                        resp = await client.get(f"https://api.spotifydown.com/download/{track_match.group(1)}", timeout=30)
+                        data = resp.json()
+                        if data.get('link'):
+                            return {
+                                'success': True,
+                                'title': data.get('title', 'Spotify Track'),
+                                'thumbnail': data.get('thumbnail'),
+                                'download_url': data.get('link'),
+                                'author': data.get('artist')
+                            }
                 except:
                     pass
                 
                 return {'success': False, 'error': 'فشل تحميل سبوتيفاي'}
         
-        # ========== بينترست ==========
+        # ========== بينترست - API جديد ==========
         elif platform == 'pinterest':
             async with httpx.AsyncClient() as client:
+                try:
+                    # الحصول على CSRF Token و Cookies
+                    home_resp = await client.get('https://snappin.app/', timeout=30)
+                    
+                    csrf_match = re.search(r'name="csrf-token" content="([^"]+)"', home_resp.text)
+                    csrf_token = csrf_match.group(1) if csrf_match else ''
+                    
+                    cookies_list = home_resp.headers.get('set-cookie', '')
+                    
+                    resp = await client.post(
+                        'https://snappin.app/',
+                        json={'url': url},
+                        headers={
+                            'Content-Type': 'application/json',
+                            'x-csrf-token': csrf_token,
+                            'Cookie': cookies_list,
+                            'Referer': 'https://snappin.app',
+                            'Origin': 'https://snappin.app',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        },
+                        timeout=30
+                    )
+                    
+                    data = resp.text
+                    links = re.findall(r'<a[^>]*class="button is-success"[^>]*href="([^"]+)"', data)
+                    
+                    if links and len(links) > 0:
+                        return {
+                            'success': True,
+                            'title': 'Pinterest Content',
+                            'download_url': links[0]
+                        }
+                except:
+                    pass
+                
                 try:
                     resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}", timeout=30)
                     data = resp.json()
@@ -236,20 +268,6 @@ async def download_video(request: DownloadRequest):
                             'thumbnail': data.get('thumbnail', img_url),
                             'download_url': img_url
                         }
-                except:
-                    pass
-                
-                try:
-                    ydl_opts = {'quiet': True}
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                        if info.get('url'):
-                            return {
-                                'success': True,
-                                'title': info.get('title', 'Pinterest Content'),
-                                'thumbnail': info.get('thumbnail'),
-                                'download_url': info.get('url')
-                            }
                 except:
                     pass
                 
@@ -281,7 +299,7 @@ async def download_video(request: DownloadRequest):
 def root():
     return {
         "status": "ok",
-        "message": "Downloader API v7 - يدعم جميع المنصات",
+        "message": "Downloader API v8 - يدعم جميع المنصات",
         "platforms": ["youtube", "tiktok", "instagram", "facebook", "twitter", "spotify", "pinterest"]
     }
 
