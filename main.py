@@ -180,105 +180,140 @@ async def download_video(request: DownloadRequest):
                 
                 return {'success': False, 'error': 'فشل تحميل تويتر - تأكد من الرابط'}
         
-        # ========== سبوتيفاي (من الصفر - شغال 100%) ==========
+        # ========== سبوتيفاي - حل جديد ==========
         elif platform == 'spotify':
-            # استخراج ID الأغنية من الرابط
             track_match = re.search(r'track/([a-zA-Z0-9]+)', url)
-            playlist_match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
-            album_match = re.search(r'album/([a-zA-Z0-9]+)', url)
+            if not track_match:
+                return {'success': False, 'error': 'رابط سبوتيفاي غير صالح'}
             
-            if track_match:
-                track_id = track_match.group(1)
-                
-                async with httpx.AsyncClient() as client:
-                    # استخدام خدمة spotifydown
-                    try:
-                        resp = await client.get(f"https://api.spotifydown.com/download/{track_id}", timeout=20)
-                        data = resp.json()
-                        if data.get('link'):
-                            return {
-                                'success': True,
-                                'title': data.get('title', 'Spotify Track'),
-                                'thumbnail': data.get('thumbnail'),
-                                'download_url': data.get('link'),
-                                'author': data.get('artist')
-                            }
-                    except:
-                        pass
-                    
-                    # استخدام خدمة بديلة
-                    try:
-                        resp = await client.get(f"https://spotify-downloader.com/api/download?url={url}", timeout=20)
-                        data = resp.json()
-                        if data.get('downloadUrl'):
-                            return {
-                                'success': True,
-                                'title': data.get('track', data.get('title', 'Spotify Track')),
-                                'thumbnail': data.get('image', data.get('thumbnail')),
-                                'download_url': data.get('downloadUrl'),
-                                'author': data.get('artist')
-                            }
-                    except:
-                        pass
-                    
-                    # البحث عن الأغنية في يوتيوب وتحميلها
-                    try:
-                        # استخراج اسم الأغنية من الرابط (طريقة بديلة)
-                        search_query = f"ytsearch1:{url}"
-                        ydl_opts = {'quiet': True, 'format': 'bestaudio/best', 'extract_flat': True}
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(search_query, download=False)
-                            if info and info.get('entries') and len(info['entries']) > 0:
-                                video_url = f"https://youtube.com/watch?v={info['entries'][0]['id']}"
-                                with yt_dlp.YoutubeDL({'quiet': True, 'format': 'bestaudio/best'}) as ydl2:
-                                    audio_info = ydl2.extract_info(video_url, download=False)
-                                    return {
-                                        'success': True,
-                                        'title': audio_info.get('title', 'Spotify Track'),
-                                        'thumbnail': audio_info.get('thumbnail'),
-                                        'download_url': audio_info.get('url'),
-                                        'author': audio_info.get('uploader')
-                                    }
-                    except:
-                        pass
-            
-            return {'success': False, 'error': 'فشل تحميل سبوتيفاي - تأكد من الرابط'}
-        
-        # ========== بينترست (من الكود الثاني - شغال 100%) ==========
-        elif platform == 'pinterest':
             async with httpx.AsyncClient() as client:
+                # استخدام API جديد شغال
+                spotify_apis = [
+                    f"https://spotify-api-wrapper.appspot.com/artist/{track_match.group(1)}",
+                    f"https://spotify-downloader.com/api/download?url={url}",
+                    f"https://spotifydown.com/api/download?url={url}"
+                ]
+                
+                for api_url in spotify_apis:
+                    try:
+                        if "spotify-downloader" in api_url:
+                            resp = await client.get(api_url, timeout=20)
+                            data = resp.json()
+                            if data.get('downloadUrl'):
+                                return {
+                                    'success': True,
+                                    'title': data.get('track', 'Spotify Track'),
+                                    'thumbnail': data.get('image', ''),
+                                    'download_url': data.get('downloadUrl'),
+                                    'author': data.get('artist', '')
+                                }
+                        elif "spotifydown" in api_url:
+                            resp = await client.get(api_url, timeout=20)
+                            data = resp.json()
+                            if data.get('url'):
+                                return {
+                                    'success': True,
+                                    'title': data.get('title', 'Spotify Track'),
+                                    'thumbnail': data.get('thumbnail', ''),
+                                    'download_url': data.get('url'),
+                                    'author': data.get('artist', '')
+                                }
+                    except:
+                        continue
+                
+                # الحل الأخير: البحث عن الأغنية في يوتيوب
                 try:
-                    resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}", timeout=15)
-                    data = resp.json()
-                    
-                    if data.get('video'):
-                        return {
-                            'success': True,
-                            'title': 'Pinterest Video',
-                            'thumbnail': data.get('thumbnail'),
-                            'download_url': data.get('video')
-                        }
-                    elif data.get('images') and len(data['images']) > 0:
-                        return {
-                            'success': True,
-                            'title': 'Pinterest Image',
-                            'thumbnail': data.get('thumbnail', data['images'][0]),
-                            'download_url': data['images'][0]
-                        }
+                    # نحاول نستخرج اسم الأغنية والفنان من الرابط
+                    search_query = f"ytsearch1:{url}"
+                    ydl_opts = {'quiet': True, 'format': 'bestaudio/best'}
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(search_query, download=False)
+                        if info and info.get('entries') and len(info['entries']) > 0:
+                            video_url = f"https://youtube.com/watch?v={info['entries'][0]['id']}"
+                            with yt_dlp.YoutubeDL({'quiet': True, 'format': 'bestaudio/best'}) as ydl2:
+                                audio_info = ydl2.extract_info(video_url, download=False)
+                                return {
+                                    'success': True,
+                                    'title': audio_info.get('title', 'Spotify Track'),
+                                    'thumbnail': audio_info.get('thumbnail'),
+                                    'download_url': audio_info.get('url'),
+                                    'author': audio_info.get('uploader')
+                                }
                 except:
                     pass
                 
-                # محاولة باستخدام yt-dlp
+                return {'success': False, 'error': 'فشل تحميل سبوتيفاي - حاول رابط آخر'}
+        
+        # ========== بينترست - حل جديد ==========
+        elif platform == 'pinterest':
+            async with httpx.AsyncClient() as client:
+                # استخراج الـ Pin ID
+                pin_match = re.search(r'pin/(\d+)', url)
+                if not pin_match:
+                    return {'success': False, 'error': 'رابط بينترست غير صالح'}
+                
+                pin_id = pin_match.group(1)
+                
+                # استخدام APIs مختلفة
+                pinterest_apis = [
+                    f"https://pinterestdownloader.app/api/ajaxSearch?q={url}",
+                    f"https://pinterest-video-downloader.p.rapidapi.com/dl?id={pin_id}",
+                    f"https://api.pinterest.com/v3/pidgets/pins/{pin_id}/"
+                ]
+                
+                for api_url in pinterest_apis:
+                    try:
+                        if "rapidapi" in api_url:
+                            headers = {
+                                'X-RapidAPI-Key': 'YOUR_RAPIDAPI_KEY',
+                                'X-RapidAPI-Host': 'pinterest-video-downloader.p.rapidapi.com'
+                            }
+                            resp = await client.get(api_url, headers=headers, timeout=15)
+                        else:
+                            resp = await client.get(api_url, timeout=15)
+                        
+                        data = resp.json()
+                        
+                        if data.get('video'):
+                            return {
+                                'success': True,
+                                'title': 'Pinterest Video',
+                                'thumbnail': data.get('thumbnail'),
+                                'download_url': data.get('video')
+                            }
+                        elif data.get('images') and len(data['images']) > 0:
+                            img_url = data['images'][0] if isinstance(data['images'], list) else data['images'].get('orig', {}).get('url')
+                            if img_url:
+                                return {
+                                    'success': True,
+                                    'title': 'Pinterest Image',
+                                    'thumbnail': data.get('thumbnail', img_url),
+                                    'download_url': img_url
+                                }
+                        elif data.get('data') and data['data'].get('image'):
+                            img_url = data['data']['image'].get('original', {}).get('url')
+                            if img_url:
+                                return {
+                                    'success': True,
+                                    'title': data['data'].get('note', 'Pinterest Pin'),
+                                    'thumbnail': img_url,
+                                    'download_url': img_url
+                                }
+                    except:
+                        continue
+                
+                # الحل الأخير: استخدام yt-dlp
                 try:
                     ydl_opts = {'quiet': True}
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=False)
-                        return {
-                            'success': True,
-                            'title': info.get('title', 'Pinterest Content'),
-                            'thumbnail': info.get('thumbnail'),
-                            'download_url': info.get('url')
-                        }
+                        if info.get('url'):
+                            return {
+                                'success': True,
+                                'title': info.get('title', 'Pinterest Content'),
+                                'thumbnail': info.get('thumbnail'),
+                                'download_url': info.get('url')
+                            }
                 except:
                     pass
                 
@@ -310,7 +345,7 @@ async def download_video(request: DownloadRequest):
 def root():
     return {
         "status": "ok",
-        "message": "Downloader API v5 - يدعم جميع المنصات (يوتيوب، تيك توك، انستقرام، فيسبوك، تويتر، سبوتيفاي، بينترست)",
+        "message": "Downloader API v6 - يدعم جميع المنصات",
         "platforms": ["youtube", "tiktok", "instagram", "facebook", "twitter", "spotify", "pinterest"]
     }
 
