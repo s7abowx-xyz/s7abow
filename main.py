@@ -35,7 +35,7 @@ def detect_platform(url: str) -> str:
         return 'twitter'
     elif 'spotify.com' in url_lower:
         return 'spotify'
-    elif 'pinterest.com' in url_lower:
+    elif 'pinterest.com' in url_lower or 'pin.it' in url_lower:
         return 'pinterest'
     else:
         return 'other'
@@ -77,23 +77,48 @@ async def download_video(request: DownloadRequest):
                         'download_url': data['data'].get('play'),
                         'author': data['data'].get('author', {}).get('unique_id')
                     }
+                return {'success': False, 'error': 'فشل تحميل تيك توك'}
         
-        # ========== انستقرام ==========
+        # ========== انستقرام - القديم الشغال ==========
         elif platform == 'instagram':
             async with httpx.AsyncClient() as client:
-                resp = await client.get(f"https://instagramdl.hitesh-01.repl.co/instagram?url={url}")
-                data = resp.json()
-                if data.get('result'):
-                    result = data['result']
-                    download_url = result.get('video_url')
-                    if not download_url and result.get('images'):
-                        download_url = result['images'][0] if result['images'] else None
-                    return {
-                        'success': True,
-                        'title': 'Instagram Post',
-                        'thumbnail': result.get('thumbnail'),
-                        'download_url': download_url
-                    }
+                try:
+                    # API انستقرام القديم الشغال
+                    resp = await client.get(f"https://instagramdl.hitesh-01.repl.co/instagram?url={url}", timeout=15)
+                    data = resp.json()
+                    
+                    if data.get('result'):
+                        result = data['result']
+                        download_url = result.get('video_url')
+                        if not download_url and result.get('images'):
+                            download_url = result['images'][0] if result['images'] else None
+                        
+                        if download_url:
+                            return {
+                                'success': True,
+                                'title': result.get('title', 'Instagram Post'),
+                                'thumbnail': result.get('thumbnail'),
+                                'download_url': download_url
+                            }
+                except:
+                    pass
+                
+                # Backup باستخدام yt-dlp
+                try:
+                    ydl_opts = {'quiet': True}
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        if info.get('url'):
+                            return {
+                                'success': True,
+                                'title': info.get('title', 'Instagram'),
+                                'thumbnail': info.get('thumbnail'),
+                                'download_url': info.get('url')
+                            }
+                except:
+                    pass
+                
+                return {'success': False, 'error': 'فشل تحميل انستقرام'}
         
         # ========== فيسبوك ==========
         elif platform == 'facebook':
@@ -110,6 +135,8 @@ async def download_video(request: DownloadRequest):
                         }
                 except:
                     pass
+                
+                return {'success': False, 'error': 'فشل تحميل فيسبوك'}
         
         # ========== تويتر ==========
         elif platform == 'twitter':
@@ -126,6 +153,8 @@ async def download_video(request: DownloadRequest):
                         }
                 except:
                     pass
+                
+                return {'success': False, 'error': 'فشل تحميل تويتر'}
         
         # ========== سبوتيفاي ==========
         elif platform == 'spotify':
@@ -150,56 +179,82 @@ async def download_video(request: DownloadRequest):
                 except:
                     pass
                 
-                return {"success": False, "error": "Spotify download failed"}
+                return {"success": False, "error": "فشل تحميل سبوتيفاي"}
         
-        # ========== بينترست - حل جديد ==========
+        # ========== بينترست - يدعم pinterest.com و pin.it ==========
         elif platform == 'pinterest':
             async with httpx.AsyncClient() as client:
-                # استخراج الـ Pin ID
+                # استخراج الـ Pin ID من الرابط (يدعم pinterest.com و pin.it)
                 pin_match = re.search(r'pin/(\d+)', url)
                 if not pin_match:
-                    return {'success': False, 'error': 'رابط بينترست غير صالح'}
+                    pin_match = re.search(r'pin\.it/([a-zA-Z0-9]+)', url)
                 
-                pin_id = pin_match.group(1)
+                if pin_match:
+                    pin_id = pin_match.group(1)
+                    
+                    # استخدام API Pinterest الرسمي
+                    try:
+                        resp = await client.get(
+                            f"https://api.pinterest.com/v3/pidgets/pins/{pin_id}/",
+                            timeout=30
+                        )
+                        data = resp.json()
+                        
+                        if data.get('data'):
+                            pin_data = data['data']
+                            
+                            # صورة
+                            if pin_data.get('image'):
+                                img_url = pin_data['image'].get('original', {}).get('url')
+                                if img_url:
+                                    return {
+                                        'success': True,
+                                        'title': pin_data.get('note', 'Pinterest Image'),
+                                        'thumbnail': img_url,
+                                        'download_url': img_url
+                                    }
+                            
+                            # فيديو
+                            if pin_data.get('video'):
+                                video_url = pin_data['video'].get('url')
+                                if video_url:
+                                    return {
+                                        'success': True,
+                                        'title': pin_data.get('note', 'Pinterest Video'),
+                                        'thumbnail': pin_data.get('image', {}).get('original', {}).get('url'),
+                                        'download_url': video_url
+                                    }
+                    except:
+                        pass
                 
-                # استخدام API Pinterest
+                # بديل: Pinterest Downloader
                 try:
-                    resp = await client.get(
-                        f"https://api.pinterest.com/v3/pidgets/pins/{pin_id}/",
-                        timeout=30
-                    )
+                    resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}", timeout=30)
                     data = resp.json()
                     
-                    if data.get('data'):
-                        pin_data = data['data']
-                        
-                        # صورة
-                        if pin_data.get('image'):
-                            img_url = pin_data['image'].get('original', {}).get('url')
-                            if img_url:
-                                return {
-                                    'success': True,
-                                    'title': pin_data.get('note', 'Pinterest Image'),
-                                    'thumbnail': img_url,
-                                    'download_url': img_url
-                                }
-                        
-                        # فيديو
-                        if pin_data.get('video'):
-                            video_url = pin_data['video'].get('url')
-                            if video_url:
-                                return {
-                                    'success': True,
-                                    'title': pin_data.get('note', 'Pinterest Video'),
-                                    'thumbnail': pin_data.get('image', {}).get('original', {}).get('url'),
-                                    'download_url': video_url
-                                }
+                    if data.get('video'):
+                        return {
+                            'success': True,
+                            'title': 'Pinterest Video',
+                            'thumbnail': data.get('thumbnail'),
+                            'download_url': data.get('video')
+                        }
+                    elif data.get('images') and len(data['images']) > 0:
+                        img_url = data['images'][0] if isinstance(data['images'], list) else data['images'].get('orig', {}).get('url')
+                        return {
+                            'success': True,
+                            'title': 'Pinterest Image',
+                            'thumbnail': data.get('thumbnail', img_url),
+                            'download_url': img_url
+                        }
                 except:
                     pass
                 
                 return {'success': False, 'error': 'فشل تحميل بينترست'}
         
-        return {'success': False, 'error': f'المنصة {platform} غير مدعومة'}
+        # ========== منصات أخرى ==========
+        else:
+            return {'success': False, 'error': f'المنصة {platform} غير مدعومة حالياً'}
         
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -210,4 +265,8 @@ def root():
         "status": "ok",
         "message": "Downloader API - يدعم جميع المنصات",
         "platforms": ["youtube", "tiktok", "instagram", "facebook", "twitter", "spotify", "pinterest"]
-                    }
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
