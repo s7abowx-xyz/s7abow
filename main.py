@@ -23,7 +23,7 @@ class DownloadRequest(BaseModel):
 
 def detect_platform(url: str) -> str:
     url_lower = url.lower()
-    if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+    if 'youtube.com' in url_lower or 'youtu.be' in url_lower or 'youtube.com/shorts' in url_lower:
         return 'youtube'
     elif 'tiktok.com' in url_lower:
         return 'tiktok'
@@ -40,14 +40,33 @@ def detect_platform(url: str) -> str:
     else:
         return 'other'
 
+def extract_youtube_id(url: str) -> Optional[str]:
+    """استخراج ID الفيديو من رابط يوتيوب (يدعم shorts أيضاً)"""
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=)([^&]+)',
+        r'(?:youtu\.be\/)([^?]+)',
+        r'(?:youtube\.com\/embed\/)([^/?]+)',
+        r'(?:youtube\.com\/shorts\/)([^/?]+)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
 @app.post("/download")
 async def download_video(request: DownloadRequest):
     url = request.url
     platform = detect_platform(url)
     
     try:
-        # ========== يوتيوب ==========
-         if platform == 'youtube':
+        # ========== يوتيوب (يدعم shorts) ==========
+        if platform == 'youtube':
+            # تأكد من أن الرابط صالح
+            video_id = extract_youtube_id(url)
+            if not video_id:
+                return {'success': False, 'error': 'رابط يوتيوب غير صالح'}
+            
             if request.type == 'audio':
                 ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
             else:
@@ -183,7 +202,6 @@ async def download_video(request: DownloadRequest):
         elif platform == 'pinterest':
             async with httpx.AsyncClient() as client:
                 try:
-                    # جلب الصفحة الرئيسية للحصول على CSRF Token
                     home = await client.get("https://snappin.app/")
                     
                     csrf = re.search(
@@ -197,7 +215,6 @@ async def download_video(request: DownloadRequest):
                         [c.split(";")[0] for c in home.headers.get_list("set-cookie")]
                     )
                     
-                    # إرسال رابط بينترست
                     result = await client.post(
                         "https://snappin.app/",
                         json={"url": url},
@@ -211,14 +228,13 @@ async def download_video(request: DownloadRequest):
                         timeout=30
                     )
                     
-                    # استخراج رابط التحميل
                     links = re.findall(
                         r'<a[^>]*class="button is-success"[^>]*href="([^"]+)"',
                         result.text
                     )
                     
                     if not links:
-                        return {"success": False, "error": "فشل تحميل بينترست - لا توجد روابط"}
+                        return {"success": False, "error": "فشل تحميل بينترست"}
                     
                     media = links[0]
                     
@@ -233,7 +249,7 @@ async def download_video(request: DownloadRequest):
                     }
                     
                 except Exception as e:
-                    return {"success": False, "error": f"فشل تحميل بينترست: {str(e)}"}
+                    return {"success": False, "error": f"فشل تحميل بينترست"}
         
         # ========== منصات أخرى ==========
         else:
@@ -246,7 +262,7 @@ async def download_video(request: DownloadRequest):
 def root():
     return {
         "status": "ok",
-        "message": "Downloader API - يدعم جميع المنصات",
+        "message": "Downloader API - يدعم جميع المنصات (YouTube Shorts مدعوم)",
         "platforms": ["youtube", "tiktok", "instagram", "facebook", "twitter", "spotify", "pinterest"]
     }
 
