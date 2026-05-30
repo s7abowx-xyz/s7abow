@@ -79,11 +79,10 @@ async def download_video(request: DownloadRequest):
                     }
                 return {'success': False, 'error': 'فشل تحميل تيك توك'}
         
-        # ========== انستقرام - القديم الشغال ==========
+        # ========== انستقرام ==========
         elif platform == 'instagram':
             async with httpx.AsyncClient() as client:
                 try:
-                    # API انستقرام القديم الشغال
                     resp = await client.get(f"https://instagramdl.hitesh-01.repl.co/instagram?url={url}", timeout=15)
                     data = resp.json()
                     
@@ -103,7 +102,6 @@ async def download_video(request: DownloadRequest):
                 except:
                     pass
                 
-                # Backup باستخدام yt-dlp
                 try:
                     ydl_opts = {'quiet': True}
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -181,76 +179,61 @@ async def download_video(request: DownloadRequest):
                 
                 return {"success": False, "error": "فشل تحميل سبوتيفاي"}
         
-        # ========== بينترست - يدعم pinterest.com و pin.it ==========
+        # ========== بينترست ==========
         elif platform == 'pinterest':
             async with httpx.AsyncClient() as client:
-                # استخراج الـ Pin ID من الرابط (يدعم pinterest.com و pin.it)
-                pin_match = re.search(r'pin/(\d+)', url)
-                if not pin_match:
-                    pin_match = re.search(r'pin\.it/([a-zA-Z0-9]+)', url)
-                
-                if pin_match:
-                    pin_id = pin_match.group(1)
-                    
-                    # استخدام API Pinterest الرسمي
-                    try:
-                        resp = await client.get(
-                            f"https://api.pinterest.com/v3/pidgets/pins/{pin_id}/",
-                            timeout=30
-                        )
-                        data = resp.json()
-                        
-                        if data.get('data'):
-                            pin_data = data['data']
-                            
-                            # صورة
-                            if pin_data.get('image'):
-                                img_url = pin_data['image'].get('original', {}).get('url')
-                                if img_url:
-                                    return {
-                                        'success': True,
-                                        'title': pin_data.get('note', 'Pinterest Image'),
-                                        'thumbnail': img_url,
-                                        'download_url': img_url
-                                    }
-                            
-                            # فيديو
-                            if pin_data.get('video'):
-                                video_url = pin_data['video'].get('url')
-                                if video_url:
-                                    return {
-                                        'success': True,
-                                        'title': pin_data.get('note', 'Pinterest Video'),
-                                        'thumbnail': pin_data.get('image', {}).get('original', {}).get('url'),
-                                        'download_url': video_url
-                                    }
-                    except:
-                        pass
-                
-                # بديل: Pinterest Downloader
                 try:
-                    resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}", timeout=30)
-                    data = resp.json()
+                    # جلب الصفحة الرئيسية للحصول على CSRF Token
+                    home = await client.get("https://snappin.app/")
                     
-                    if data.get('video'):
-                        return {
-                            'success': True,
-                            'title': 'Pinterest Video',
-                            'thumbnail': data.get('thumbnail'),
-                            'download_url': data.get('video')
-                        }
-                    elif data.get('images') and len(data['images']) > 0:
-                        img_url = data['images'][0] if isinstance(data['images'], list) else data['images'].get('orig', {}).get('url')
-                        return {
-                            'success': True,
-                            'title': 'Pinterest Image',
-                            'thumbnail': data.get('thumbnail', img_url),
-                            'download_url': img_url
-                        }
-                except:
-                    pass
-                
-                return {'success': False, 'error': 'فشل تحميل بينترست'}
+                    csrf = re.search(
+                        r'name="csrf-token" content="([^"]+)"',
+                        home.text
+                    )
+                    
+                    token = csrf.group(1) if csrf else ""
+                    
+                    cookies = "; ".join(
+                        [c.split(";")[0] for c in home.headers.get_list("set-cookie")]
+                    )
+                    
+                    # إرسال رابط بينترست
+                    result = await client.post(
+                        "https://snappin.app/",
+                        json={"url": url},
+                        headers={
+                            "x-csrf-token": token,
+                            "Cookie": cookies,
+                            "Origin": "https://snappin.app",
+                            "Referer": "https://snappin.app",
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                        },
+                        timeout=30
+                    )
+                    
+                    # استخراج رابط التحميل
+                    links = re.findall(
+                        r'<a[^>]*class="button is-success"[^>]*href="([^"]+)"',
+                        result.text
+                    )
+                    
+                    if not links:
+                        return {"success": False, "error": "فشل تحميل بينترست - لا توجد روابط"}
+                    
+                    media = links[0]
+                    
+                    if not media.startswith("http"):
+                        media = "https://snappin.app" + media
+                    
+                    return {
+                        "success": True,
+                        "title": "Pinterest Media",
+                        "thumbnail": "",
+                        "download_url": media
+                    }
+                    
+                except Exception as e:
+                    return {"success": False, "error": f"فشل تحميل بينترست: {str(e)}"}
         
         # ========== منصات أخرى ==========
         else:
