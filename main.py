@@ -20,6 +20,8 @@ app.add_middleware(
 class DownloadRequest(BaseModel):
     url: str
     type: Optional[str] = "video"
+    recaptcha_token: Optional[str] = None
+    user: Optional[str] = None
 
 def detect_platform(url: str) -> str:
     url_lower = url.lower()
@@ -40,10 +42,32 @@ def detect_platform(url: str) -> str:
     else:
         return 'other'
 
+# ========== دالة التحقق من reCAPTCHA ==========
+async def verify_recaptcha(token: str):
+    """التحقق من أن المستخدم إنسان باستخدام Google reCAPTCHA"""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://www.google.com/recaptcha/api/siteverify",
+                data={"secret": "YOUR_SECRET_KEY", "response": token}
+            )
+            result = resp.json()
+            return result.get("success", False)
+    except Exception as e:
+        print(f"reCAPTCHA verification error: {e}")
+        return False
+
 @app.post("/download")
 async def download_video(request: DownloadRequest):
     url = request.url
     platform = detect_platform(url)
+    
+    # ========== التحقق من reCAPTCHA (اختياري) ==========
+    # إذا أرسل المستخدم token, تحقق منه
+    if request.recaptcha_token:
+        is_human = await verify_recaptcha(request.recaptcha_token)
+        if not is_human:
+            return {'success': False, 'error': 'فشل التحقق - يرجى المحاولة مرة أخرى'}
     
     try:
         # ========== يوتيوب ==========
@@ -182,58 +206,68 @@ async def download_video(request: DownloadRequest):
         # ========== بينترست ==========
         elif platform == 'pinterest':
             async with httpx.AsyncClient() as client:
+                pin_match = re.search(r'pin/(\d+)', url)
+                if not pin_match:
+                    pin_match = re.search(r'pin\.it/([a-zA-Z0-9]+)', url)
+                
+                if pin_match:
+                    pin_id = pin_match.group(1)
+                    
+                    try:
+                        resp = await client.get(
+                            f"https://api.pinterest.com/v3/pidgets/pins/{pin_id}/",
+                            timeout=30
+                        )
+                        data = resp.json()
+                        
+                        if data.get('data'):
+                            pin_data = data['data']
+                            
+                            if pin_data.get('image'):
+                                img_url = pin_data['image'].get('original', {}).get('url')
+                                if img_url:
+                                    return {
+                                        'success': True,
+                                        'title': pin_data.get('note', 'Pinterest Image'),
+                                        'thumbnail': img_url,
+                                        'download_url': img_url
+                                    }
+                            
+                            if pin_data.get('video'):
+                                video_url = pin_data['video'].get('url')
+                                if video_url:
+                                    return {
+                                        'success': True,
+                                        'title': pin_data.get('note', 'Pinterest Video'),
+                                        'thumbnail': pin_data.get('image', {}).get('original', {}).get('url'),
+                                        'download_url': video_url
+                                    }
+                    except:
+                        pass
+                
                 try:
-                    # جلب الصفحة الرئيسية للحصول على CSRF Token
-                    home = await client.get("https://snappin.app/")
+                    resp = await client.get(f"https://pinterestdownloader.app/api/ajaxSearch?q={url}", timeout=30)
+                    data = resp.json()
                     
-                    csrf = re.search(
-                        r'name="csrf-token" content="([^"]+)"',
-                        home.text
-                    )
-                    
-                    token = csrf.group(1) if csrf else ""
-                    
-                    cookies = "; ".join(
-                        [c.split(";")[0] for c in home.headers.get_list("set-cookie")]
-                    )
-                    
-                    # إرسال رابط بينترست
-                    result = await client.post(
-                        "https://snappin.app/",
-                        json={"url": url},
-                        headers={
-                            "x-csrf-token": token,
-                            "Cookie": cookies,
-                            "Origin": "https://snappin.app",
-                            "Referer": "https://snappin.app",
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        },
-                        timeout=30
-                    )
-                    
-                    # استخراج رابط التحميل
-                    links = re.findall(
-                        r'<a[^>]*class="button is-success"[^>]*href="([^"]+)"',
-                        result.text
-                    )
-                    
-                    if not links:
-                        return {"success": False, "error": "فشل تحميل بينترست - لا توجد روابط"}
-                    
-                    media = links[0]
-                    
-                    if not media.startswith("http"):
-                        media = "https://snappin.app" + media
-                    
-                    return {
-                        "success": True,
-                        "title": "Pinterest Media",
-                        "thumbnail": "",
-                        "download_url": media
-                    }
-                    
-                except Exception as e:
-                    return {"success": False, "error": f"فشل تحميل بينترست: {str(e)}"}
+                    if data.get('video'):
+                        return {
+                            'success': True,
+                            'title': 'Pinterest Video',
+                            'thumbnail': data.get('thumbnail'),
+                            'download_url': data.get('video')
+                        }
+                    elif data.get('images') and len(data['images']) > 0:
+                        img_url = data['images'][0] if isinstance(data['images'], list) else data['images'].get('orig', {}).get('url')
+                        return {
+                            'success': True,
+                            'title': 'Pinterest Image',
+                            'thumbnail': data.get('thumbnail', img_url),
+                            'download_url': img_url
+                        }
+                except:
+                    pass
+                
+                return {'success': False, 'error': 'فشل تحميل بينترست'}
         
         # ========== منصات أخرى ==========
         else:
@@ -246,7 +280,7 @@ async def download_video(request: DownloadRequest):
 def root():
     return {
         "status": "ok",
-        "message": "Downloader API - يدعم جميع المنصات",
+        "message": "Downloader API - يدعم جميع المنصات مع reCAPTCHA",
         "platforms": ["youtube", "tiktok", "instagram", "facebook", "twitter", "spotify", "pinterest"]
     }
 
