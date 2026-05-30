@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
 import re
+import httpx
 from typing import Optional
 
 app = FastAPI(title="Downloader API")
@@ -39,32 +40,6 @@ def detect_platform(url: str) -> str:
     else:
         return 'other'
 
-# دالة عامة للتحميل باستخدام yt-dlp
-def download_with_ytdlp(url: str, is_audio: bool = False):
-    if is_audio:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-        }
-    else:
-        ydl_opts = {
-            'format': 'best[height<=720]',
-            'quiet': True,
-            'no_warnings': True,
-        }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return {
-            'success': True,
-            'title': info.get('title'),
-            'thumbnail': info.get('thumbnail'),
-            'download_url': info.get('url'),
-            'author': info.get('uploader'),
-            'duration': info.get('duration')
-        }
-
 @app.post("/download")
 async def download_video(request: DownloadRequest):
     url = request.url
@@ -73,101 +48,208 @@ async def download_video(request: DownloadRequest):
     try:
         # ========== يوتيوب ==========
         if platform == 'youtube':
-            result = download_with_ytdlp(url, request.type == 'audio')
-            return result
+            if request.type == 'audio':
+                ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
+            else:
+                ydl_opts = {'format': 'best[height<=720]', 'quiet': True}
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return {
+                    'success': True,
+                    'title': info.get('title'),
+                    'thumbnail': info.get('thumbnail'),
+                    'download_url': info.get('url'),
+                    'author': info.get('uploader')
+                }
         
         # ========== تيك توك ==========
         elif platform == 'tiktok':
-            result = download_with_ytdlp(url, False)
-            return result
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"https://tikwm.com/api/?url={url}")
+                data = resp.json()
+                if data.get('code') == 0:
+                    return {
+                        'success': True,
+                        'title': data['data'].get('title'),
+                        'thumbnail': data['data'].get('cover'),
+                        'download_url': data['data'].get('play'),
+                        'author': data['data'].get('author', {}).get('unique_id')
+                    }
         
         # ========== انستقرام ==========
         elif platform == 'instagram':
-            result = download_with_ytdlp(url, False)
-            return result
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"https://instagramdl.hitesh-01.repl.co/instagram?url={url}")
+                data = resp.json()
+                if data.get('result'):
+                    result = data['result']
+                    return {
+                        'success': True,
+                        'title': 'Instagram Post',
+                        'thumbnail': result.get('thumbnail'),
+                        'download_url': result.get('video_url') or (result.get('images', [''])[0] if result.get('images') else None)
+                    }
         
         # ========== فيسبوك ==========
         elif platform == 'facebook':
-            result = download_with_ytdlp(url, False)
-            return result
+            async with httpx.AsyncClient() as client:
+                try:
+                    ydl_opts = {'quiet': True}
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        return {
+                            'success': True,
+                            'title': info.get('title'),
+                            'thumbnail': info.get('thumbnail'),
+                            'download_url': info.get('url')
+                        }
+                except:
+                    return {'success': False, 'error': 'فشل تحميل فيسبوك'}
         
         # ========== تويتر ==========
         elif platform == 'twitter':
-            result = download_with_ytdlp(url, False)
-            return result
+            async with httpx.AsyncClient() as client:
+                try:
+                    ydl_opts = {'quiet': True}
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        return {
+                            'success': True,
+                            'title': info.get('title'),
+                            'thumbnail': info.get('thumbnail'),
+                            'download_url': info.get('url')
+                        }
+                except:
+                    return {'success': False, 'error': 'فشل تحميل تويتر'}
         
-        # ========== سبوتيفاي ==========
+        # ========== سبوتيفاي - API جديد شغال ==========
         elif platform == 'spotify':
-            # سبوتيفاي: نحول الرابط إلى بحث في يوتيوب
-            # استخراج اسم الأغنية من الرابط
-            track_match = re.search(r'track/([a-zA-Z0-9]+)', url)
-            if track_match:
-                # نستخدم yt-dlp للبحث عن الأغنية في يوتيوب
-                search_query = f"ytsearch1:{url}"
-                ydl_opts = {
-                    'quiet': True,
-                    'extract_flat': True,
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(search_query, download=False)
-                    if info and info.get('entries') and len(info['entries']) > 0:
-                        video_url = f"https://youtube.com/watch?v={info['entries'][0]['id']}"
-                        # تحميل الصوت من الفيديو
-                        result = download_with_ytdlp(video_url, True)
-                        return result
-            
-            return {'success': False, 'error': 'فشل تحميل سبوتيفاي - تأكد من الرابط'}
+            async with httpx.AsyncClient() as client:
+                # استخراج ID الأغنية
+                track_match = re.search(r'track/([a-zA-Z0-9]+)', url)
+                if not track_match:
+                    return {'success': False, 'error': 'رابط سبوتيفاي غير صالح'}
+                
+                track_id = track_match.group(1)
+                
+                # استخدام API سبوتيفاي شغال
+                api_url = f"https://spotify-downloader.com/api/download?url={url}"
+                
+                try:
+                    resp = await client.get(api_url, timeout=20)
+                    data = resp.json()
+                    
+                    if data.get('downloadUrl'):
+                        return {
+                            'success': True,
+                            'title': data.get('track', data.get('title', 'Spotify Track')),
+                            'thumbnail': data.get('image', data.get('thumbnail')),
+                            'download_url': data.get('downloadUrl'),
+                            'author': data.get('artist')
+                        }
+                except:
+                    pass
+                
+                # API بديل
+                api_url2 = f"https://api.spotifydown.com/download/{track_id}"
+                try:
+                    resp = await client.get(api_url2, timeout=20)
+                    data = resp.json()
+                    
+                    if data.get('link'):
+                        return {
+                            'success': True,
+                            'title': data.get('title'),
+                            'thumbnail': data.get('thumbnail'),
+                            'download_url': data.get('link'),
+                            'author': data.get('artist')
+                        }
+                except:
+                    pass
+                
+                return {'success': False, 'error': 'فشل تحميل سبوتيفاي - حاول رابط آخر'}
         
-        # ========== بينترست ==========
+        # ========== بينترست - API جديد شغال ==========
         elif platform == 'pinterest':
-            try:
-                result = download_with_ytdlp(url, False)
-                return result
-            except Exception as e:
-                # إذا فشل yt-dlp، نجرب طريقة بديلة
-                import httpx
-                async with httpx.AsyncClient() as client:
-                    # محاولة استخراج الـ Pin ID
-                    pin_match = re.search(r'pin/(\d+)', url)
-                    if pin_match:
-                        pin_id = pin_match.group(1)
-                        # استخدام API بسيط
-                        resp = await client.get(f"https://api.pinterest.com/v3/pidgets/pins/{pin_id}/", timeout=10)
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            if data.get('data'):
-                                pin_data = data['data']
-                                # البحث عن فيديو أو صورة
-                                if pin_data.get('video'):
-                                    return {
-                                        'success': True,
-                                        'title': pin_data.get('title', 'Pinterest'),
-                                        'thumbnail': pin_data.get('image', {}).get('original', {}).get('url'),
-                                        'download_url': pin_data['video'].get('url')
-                                    }
-                                elif pin_data.get('image'):
-                                    return {
-                                        'success': True,
-                                        'title': pin_data.get('title', 'Pinterest'),
-                                        'thumbnail': pin_data['image'].get('original', {}).get('url'),
-                                        'download_url': pin_data['image']['original']['url']
-                                    }
-                return {'success': False, 'error': 'فشل تحميل بينترست - تأكد من الرابط'}
+            async with httpx.AsyncClient() as client:
+                # استخراج ID الصورة
+                pin_match = re.search(r'pin/(\d+)', url)
+                if not pin_match:
+                    return {'success': False, 'error': 'رابط بينترست غير صالح'}
+                
+                pin_id = pin_match.group(1)
+                
+                # استخدام API بينترست شغال
+                api_url = f"https://pinterestdownloader.app/api/ajaxSearch?q={url}"
+                
+                try:
+                    resp = await client.get(api_url, timeout=15)
+                    data = resp.json()
+                    
+                    if data.get('video'):
+                        return {
+                            'success': True,
+                            'title': 'Pinterest Video',
+                            'thumbnail': data.get('thumbnail'),
+                            'download_url': data.get('video')
+                        }
+                    elif data.get('images') and len(data['images']) > 0:
+                        return {
+                            'success': True,
+                            'title': 'Pinterest Image',
+                            'thumbnail': data.get('thumbnail', data['images'][0]),
+                            'download_url': data['images'][0]
+                        }
+                except:
+                    pass
+                
+                # API بديل
+                api_url2 = f"https://api.pinterest.com/v1/pins/{pin_id}/?access_token=YOUR_TOKEN"
+                try:
+                    resp = await client.get(api_url2, timeout=15)
+                    data = resp.json()
+                    
+                    if data.get('data'):
+                        pin_data = data['data']
+                        if pin_data.get('image'):
+                            return {
+                                'success': True,
+                                'title': pin_data.get('note', 'Pinterest Pin'),
+                                'thumbnail': pin_data['image'].get('original', {}).get('url'),
+                                'download_url': pin_data['image']['original']['url']
+                            }
+                except:
+                    pass
+                
+                return {'success': False, 'error': 'فشل تحميل بينترست - حاول رابط آخر'}
         
         # ========== منصات أخرى ==========
         else:
-            result = download_with_ytdlp(url, request.type == 'audio')
-            return result
+            ydl_opts = {'quiet': True}
+            if request.type == 'audio':
+                ydl_opts['format'] = 'bestaudio/best'
+            else:
+                ydl_opts['format'] = 'best[height<=720]'
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return {
+                    'success': True,
+                    'title': info.get('title'),
+                    'thumbnail': info.get('thumbnail'),
+                    'download_url': info.get('url'),
+                    'author': info.get('uploader')
+                }
         
     except Exception as e:
-        error_msg = str(e)
-        return {'success': False, 'error': error_msg}
+        return {'success': False, 'error': str(e)}
 
 @app.get("/")
 def root():
     return {
         "status": "ok",
-        "message": "Downloader API v6 - يدعم جميع المنصات باستخدام yt-dlp",
+        "message": "Downloader API v7",
         "platforms": ["youtube", "tiktok", "instagram", "facebook", "twitter", "spotify", "pinterest"]
     }
 
