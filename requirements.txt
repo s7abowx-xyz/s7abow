@@ -2,4 +2,4 @@ fastapi
 uvicorn
 yt-dlp
 httpx
-requests
+python-multipart

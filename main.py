@@ -1,13 +1,12 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
 import re
 import httpx
-from typing import Optional, List
-import requests
+from typing import Optional
 
-app = FastAPI(title="Downloader API - Universal")
+app = FastAPI(title="Downloader API - Download Only")
 
 # CORS
 app.add_middleware(
@@ -21,11 +20,6 @@ app.add_middleware(
 class DownloadRequest(BaseModel):
     url: str
     type: Optional[str] = "video"
-
-class SearchRequest(BaseModel):
-    query: str
-    type: Optional[str] = "video"
-    limit: Optional[int] = 10
 
 def detect_platform(url: str) -> str:
     url_lower = url.lower()
@@ -59,211 +53,7 @@ def extract_youtube_id(url: str) -> Optional[str]:
             return match.group(1)
     return None
 
-# ========== دالة البحث في يوتيوب ==========
-def search_youtube(query: str, search_type: str = 'video', limit: int = 10) -> List[dict]:
-    results = []
-    search_query = f"ytsearch{limit}:{query}"
-    
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': True,
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(search_query, download=False)
-            if info and 'entries' in info:
-                for entry in info['entries']:
-                    if entry:
-                        result = {
-                            'id': entry.get('id'),
-                            'title': entry.get('title'),
-                            'duration': entry.get('duration'),
-                            'thumbnail': f"https://img.youtube.com/vi/{entry.get('id')}/mqdefault.jpg",
-                            'url': f"https://youtube.com/watch?v={entry.get('id')}",
-                            'author': entry.get('uploader', 'Unknown')
-                        }
-                        results.append(result)
-        except Exception as e:
-            print(f"Search error: {e}")
-    return results
-
-# ========== 1. البحث في جوجل صور ==========
-@app.get("/search/googleimage")
-async def googleimage(query: str):
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"https://api.evogb.org/search/googleimage?query={query}&key=sasuke"
-        )
-        return r.json()
-
-# ========== 2. تحميل من ميديا فاير ==========
-@app.get("/download/mediafire")
-async def mediafire(url: str):
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url)
-    
-    html = r.text
-    
-    title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
-    download = re.search(r'https://download[^\"]+', html)
-    
-    return {
-        "status": True,
-        "filename": title.group(1) if title else "Unknown",
-        "download_url": download.group(0) if download else None
-    }
-
-# ========== 3. البحث في سبوتيفاي ==========
-@app.get("/search/spotify")
-async def spotify_search(query: str):
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"https://api.evogb.org/search/spotify?query={query}&key=sasuke"
-        )
-        return r.json()
-
-# ========== 4. تحميل موسيقى ==========
-@app.get("/download/music")
-async def music(url: str):
-    async with httpx.AsyncClient() as client:
-        key_res = await client.get("https://cnv.cx/v2/sanity/key")
-        key = key_res.json()["key"]
-        
-        conv = await client.post(
-            "https://cnv.cx/v2/converter",
-            headers={"key": key},
-            data={
-                "link": url,
-                "format": "mp3",
-                "audioBitrate": "128",
-                "filenameStyle": "pretty"
-            }
-        )
-        data = conv.json()
-        
-        return {
-            "status": True,
-            "title": data.get("filename"),
-            "download_url": data.get("url")
-        }
-
-# ========== 5. تحميل فيديو MP4 من يوتيوب ==========
-@app.get("/download/ytmp4")
-async def ytmp4(url: str):
-    async with httpx.AsyncClient() as client:
-        key_data = (await client.get("https://cnv.cx/v2/sanity/key")).json()
-        key = key_data["key"]
-        
-        data = (await client.post(
-            "https://cnv.cx/v2/converter",
-            headers={"key": key},
-            data={
-                "link": url,
-                "format": "mp4",
-                "videoQuality": "720",
-                "filenameStyle": "pretty",
-                "vCodec": "h264"
-            }
-        )).json()
-        
-        return {
-            "status": True,
-            "filename": data.get("filename"),
-            "download_url": data.get("url")
-        }
-
-# ========== 6. البحث في بينترست ==========
-@app.get("/search/pinterest")
-async def pinterest_search(query: str, limit: int = 20):
-    url = f"https://id.pinterest.com/resource/BaseSearchResource/get/?source_url=%2Fsearch%2Fpins%2F%3Fq%3D{query}%26rs%3Dtyped&data=%7B%22options%22%3A%7B%22query%22%3A%22{query}%22%2C%22scope%22%3A%22pins%22%2C%22rs%22%3A%22typed%22%7D%2C%22context%22%3A%7B%7D%7D"
-    
-    headers = {
-        "x-requested-with": "XMLHttpRequest",
-        "user-agent": "Mozilla/5.0"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        res = await client.get(url, headers=headers)
-        data = res.json()
-        
-        results = []
-        if 'resource_response' in data and 'data' in data['resource_response']:
-            for item in data['resource_response']['data'][:limit]:
-                results.append({
-                    'id': item.get('id'),
-                    'title': item.get('title', 'No title'),
-                    'image': item.get('images', {}).get('orig', {}).get('url', ''),
-                    'link': f"https://pinterest.com/pin/{item.get('id')}"
-                })
-        
-        return {
-            "status": True,
-            "query": query,
-            "count": len(results),
-            "results": results
-        }
-
-# ========== 7. البحث في تيك توك ==========
-@app.get("/search/tiktok")
-async def tiktok_search(query: str, count: int = 20):
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            "https://tikwm.com/api/feed/search",
-            data={
-                "keywords": query,
-                "count": count,
-                "cursor": 0,
-                "HD": 1
-            },
-            headers={
-                "Cookie": "current_language=en",
-                "User-Agent": "Mozilla/5.0"
-            }
-        )
-        data = res.json()
-        
-        results = []
-        if data.get('code') == 0 and data.get('data'):
-            for item in data['data'].get('videos', []):
-                results.append({
-                    'id': item.get('id'),
-                    'title': item.get('title'),
-                    'duration': item.get('duration'),
-                    'play_count': item.get('play_count'),
-                    'likes': item.get('digg_count'),
-                    'comments': item.get('comment_count'),
-                    'shares': item.get('share_count'),
-                    'thumbnail': item.get('cover'),
-                    'video_url': item.get('play'),
-                    'author': item.get('author', {}).get('unique_id'),
-                    'author_avatar': item.get('author', {}).get('avatar')
-                })
-        
-        return {
-            "status": True,
-            "query": query,
-            "count": len(results),
-            "results": results
-        }
-
-# ========== 8. البحث العام (يوتيوب) ==========
-@app.post("/search")
-async def search(request: SearchRequest):
-    try:
-        results = search_youtube(request.query, request.type, request.limit)
-        return {
-            'success': True,
-            'query': request.query,
-            'type': request.type,
-            'count': len(results),
-            'results': results
-        }
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
-
-# ========== 9. تحميل عام من أي منصة ==========
+# ==================== تحميل يوتيوب ====================
 @app.post("/download")
 async def download_video(request: DownloadRequest):
     url = request.url
@@ -451,55 +241,101 @@ async def download_video(request: DownloadRequest):
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
-# ========== 10. دليل API ==========
+# ==================== خدمات تحميل إضافية ====================
+
+@app.get("/download/mediafire")
+async def mediafire(url: str):
+    """تحميل ملف من ميديا فاير"""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+    
+    html = r.text
+    
+    title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+    download = re.search(r'https://download[^\"]+', html)
+    
+    return {
+        "status": True,
+        "filename": title.group(1) if title else "Unknown",
+        "download_url": download.group(0) if download else None
+    }
+
+@app.get("/download/music")
+async def music(url: str):
+    """تحميل موسيقى MP3 من رابط"""
+    async with httpx.AsyncClient() as client:
+        key_res = await client.get("https://cnv.cx/v2/sanity/key")
+        key = key_res.json()["key"]
+        
+        conv = await client.post(
+            "https://cnv.cx/v2/converter",
+            headers={"key": key},
+            data={
+                "link": url,
+                "format": "mp3",
+                "audioBitrate": "128",
+                "filenameStyle": "pretty"
+            }
+        )
+        data = conv.json()
+        
+        return {
+            "status": True,
+            "title": data.get("filename"),
+            "download_url": data.get("url")
+        }
+
+@app.get("/download/ytmp4")
+async def ytmp4(url: str):
+    """تحميل فيديو MP4 من يوتيوب"""
+    async with httpx.AsyncClient() as client:
+        key_data = (await client.get("https://cnv.cx/v2/sanity/key")).json()
+        key = key_data["key"]
+        
+        data = (await client.post(
+            "https://cnv.cx/v2/converter",
+            headers={"key": key},
+            data={
+                "link": url,
+                "format": "mp4",
+                "videoQuality": "720",
+                "filenameStyle": "pretty",
+                "vCodec": "h264"
+            }
+        )).json()
+        
+        return {
+            "status": True,
+            "filename": data.get("filename"),
+            "download_url": data.get("url")
+        }
+
+# ==================== دليل API ====================
 @app.get("/api/guide")
 def api_guide():
     return {
         "status": "ok",
-        "message": "دليل استخدام API - جميع الخدمات المتاحة",
+        "message": "واجهات API للتحميل فقط",
         "endpoints": {
-            "GET /search/googleimage": {
-                "description": "البحث في جوجل صور",
-                "params": {"query": "كلمة البحث"},
-                "example": "/search/googleimage?query=طبيعة"
-            },
-            "GET /download/mediafire": {
-                "description": "تحميل ملف من ميديا فاير",
-                "params": {"url": "رابط ميديا فاير"},
-                "example": "/download/mediafire?url=https://www.mediafire.com/file/..."
-            },
-            "GET /search/spotify": {
-                "description": "البحث في سبوتيفاي",
-                "params": {"query": "كلمة البحث"},
-                "example": "/search/spotify?query=اغنية"
-            },
-            "GET /download/music": {
-                "description": "تحميل موسيقى من رابط",
-                "params": {"url": "رابط الفيديو"},
-                "example": "/download/music?url=https://youtube.com/watch?v=..."
-            },
-            "GET /download/ytmp4": {
-                "description": "تحميل فيديو MP4 من يوتيوب",
-                "params": {"url": "رابط يوتيوب"},
-                "example": "/download/ytmp4?url=https://youtube.com/watch?v=..."
-            },
-            "GET /search/pinterest": {
-                "description": "البحث في بينترست",
-                "params": {"query": "كلمة البحث", "limit": "عدد النتائج"},
-                "example": "/search/pinterest?query=طبيعة&limit=10"
-            },
-            "GET /search/tiktok": {
-                "description": "البحث في تيك توك",
-                "params": {"query": "كلمة البحث", "count": "عدد النتائج"},
-                "example": "/search/tiktok?query=naruto&count=20"
-            },
-            "POST /search": {
-                "description": "البحث العام في يوتيوب",
-                "body": {"query": "كلمة البحث", "type": "video/audio", "limit": 10}
-            },
-            "POST /download": {
-                "description": "تحميل من أي منصة",
+            "/download": {
+                "method": "POST",
+                "description": "تحميل فيديو/صوت من أي منصة (يوتيوب، تيك توك، انستقرام، فيسبوك، تويتر، بينترست، سبوتيفاي)",
                 "body": {"url": "الرابط", "type": "video/audio"}
+            },
+            "/download/mediafire": {
+                "method": "GET",
+                "description": "تحميل ملف من ميديا فاير",
+                "params": {"url": "رابط ميديا فاير"}
+            },
+            "/download/music": {
+                "method": "GET",
+                "description": "تحميل موسيقى MP3 من رابط",
+                "params": {"url": "رابط الفيديو"}
+            },
+            "/download/ytmp4": {
+                "method": "GET",
+                "description": "تحميل فيديو MP4 من يوتيوب",
+                "params": {"url": "رابط يوتيوب"}
             }
         }
     }
@@ -508,8 +344,8 @@ def api_guide():
 def root():
     return {
         "status": "ok",
-        "message": "Universal Downloader API - يدعم جميع الخدمات",
-        "endpoints_count": 9,
+        "message": "Downloader API - تحميل فقط",
+        "endpoints": ["/download", "/download/mediafire", "/download/music", "/download/ytmp4"],
         "docs": "/api/guide"
     }
 
